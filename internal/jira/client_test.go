@@ -11,40 +11,34 @@ func TestGetIssue_Success(t *testing.T) {
 	// Mock Jira API server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Verify auth header
-		username, password, ok := r.BasicAuth()
-		if !ok || username != "test@example.com" || password != "test-token" {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader != "Bearer test-bearer-token" {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
 
-		// Return mock issue data
+		// Verify it's using API v2 with correct fields
+		if r.URL.Path != "/rest/api/2/issue/TEST-123" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		// Return mock issue data (API v2 format with plain text)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{
+			"id": "679134",
 			"key": "TEST-123",
 			"fields": {
 				"summary": "Test issue summary",
-				"description": {
-					"content": [
-						{
-							"content": [
-								{"text": "This is the issue description"}
-							]
-						}
-					]
-				},
-				"environment": "Production environment",
-				"labels": ["bug", "critical"],
-				"components": [
-					{"name": "backend"},
-					{"name": "api"}
-				]
+				"description": "This is the plain text issue description",
+				"environment": "Rancher version: 2.13.5/2.14.1"
 			}
 		}`))
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL, "test@example.com", "test-token")
+	client := NewClient(server.URL, "test-bearer-token")
 	issue, err := client.GetIssue(context.Background(), "TEST-123")
 
 	if err != nil {
@@ -57,17 +51,11 @@ func TestGetIssue_Success(t *testing.T) {
 	if issue.Summary != "Test issue summary" {
 		t.Errorf("expected summary 'Test issue summary', got '%s'", issue.Summary)
 	}
-	if issue.Description != "This is the issue description" {
-		t.Errorf("expected description, got '%s'", issue.Description)
+	if issue.Description != "This is the plain text issue description" {
+		t.Errorf("expected plain text description, got '%s'", issue.Description)
 	}
-	if issue.Environment != "Production environment" {
-		t.Errorf("expected environment 'Production environment', got '%s'", issue.Environment)
-	}
-	if len(issue.Labels) != 2 {
-		t.Errorf("expected 2 labels, got %d", len(issue.Labels))
-	}
-	if len(issue.Components) != 2 {
-		t.Errorf("expected 2 components, got %d", len(issue.Components))
+	if issue.Environment != "Rancher version: 2.13.5/2.14.1" {
+		t.Errorf("expected environment 'Rancher version: 2.13.5/2.14.1', got '%s'", issue.Environment)
 	}
 }
 
@@ -78,7 +66,7 @@ func TestGetIssue_NotFound(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL, "test@example.com", "test-token")
+	client := NewClient(server.URL, "test-bearer-token")
 	_, err := client.GetIssue(context.Background(), "NOTFOUND-123")
 
 	if err == nil {
@@ -93,7 +81,7 @@ func TestGetIssue_Unauthorized(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL, "wrong@example.com", "wrong-token")
+	client := NewClient(server.URL, "wrong-bearer-token")
 	_, err := client.GetIssue(context.Background(), "TEST-123")
 
 	if err == nil {
@@ -108,7 +96,7 @@ func TestGetIssue_ServerError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL, "test@example.com", "test-token")
+	client := NewClient(server.URL, "test-bearer-token")
 	_, err := client.GetIssue(context.Background(), "TEST-123")
 
 	if err == nil {
@@ -121,19 +109,18 @@ func TestGetIssue_EmptyFields(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{
+			"id": "456",
 			"key": "TEST-456",
 			"fields": {
 				"summary": "Minimal issue",
-				"description": null,
-				"environment": null,
-				"labels": [],
-				"components": []
+				"description": "",
+				"environment": ""
 			}
 		}`))
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL, "test@example.com", "test-token")
+	client := NewClient(server.URL, "test-bearer-token")
 	issue, err := client.GetIssue(context.Background(), "TEST-456")
 
 	if err != nil {
@@ -146,10 +133,58 @@ func TestGetIssue_EmptyFields(t *testing.T) {
 	if issue.Environment != "" {
 		t.Errorf("expected empty environment, got '%s'", issue.Environment)
 	}
-	if len(issue.Labels) != 0 {
-		t.Errorf("expected 0 labels, got %d", len(issue.Labels))
+}
+
+func TestGetIssue_RealWorldExample(t *testing.T) {
+	// Test with the actual SUSE Jira response format
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader != "Bearer test-bearer-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{
+			"id": "679134",
+			"key": "SURE-11610",
+			"fields": {
+				"summary": "Rancher removes chartValues in YAML editor",
+				"description": "*Issue description:*\r\nCustomer found a bug in Rancher UI where chartValues got removed during the editing of cluster YAML.",
+				"environment": "*Rancher Cluster:*\r\nRancher version: 2.13.5/2.14.1"
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-bearer-token")
+	issue, err := client.GetIssue(context.Background(), "SURE-11610")
+
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
 	}
-	if len(issue.Components) != 0 {
-		t.Errorf("expected 0 components, got %d", len(issue.Components))
+
+	if issue.ID != "SURE-11610" {
+		t.Errorf("expected ID 'SURE-11610', got '%s'", issue.ID)
 	}
+	if issue.Summary != "Rancher removes chartValues in YAML editor" {
+		t.Errorf("unexpected summary: '%s'", issue.Summary)
+	}
+	if !contains(issue.Environment, "Rancher version: 2.13.5/2.14.1") {
+		t.Errorf("expected environment to contain Rancher version, got '%s'", issue.Environment)
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && (s[:len(substr)] == substr || s[len(s)-len(substr):] == substr || containsMiddle(s, substr)))
+}
+
+func containsMiddle(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }

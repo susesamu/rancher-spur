@@ -9,30 +9,43 @@ import (
 
 // SaddleConfig represents the expected structure of a Saddle YAML configuration
 type SaddleConfig struct {
-	Cluster ClusterConfig `yaml:"cluster"`
+	Clusters map[string]ClusterConfig `yaml:"clusters"`
 }
 
 type ClusterConfig struct {
-	Name       string              `yaml:"name"`
-	Nodes      []NodeConfig        `yaml:"nodes"`
-	Networking NetworkingConfig    `yaml:"networking"`
-	Applications []ApplicationConfig `yaml:"applications,omitempty"`
+	Provider   ProviderConfig   `yaml:"provider"`
+	Kubernetes KubernetesConfig `yaml:"kubernetes"`
+	Rancher    RancherConfig    `yaml:"rancher,omitempty"`
+	SSH        SSHConfig        `yaml:"ssh"`
+	Cluster    ClusterSettings  `yaml:"cluster"`
 }
 
-type NodeConfig struct {
-	Role         string `yaml:"role"`
-	InstanceType string `yaml:"instance_type"`
-	Count        int    `yaml:"count,omitempty"`
+type ProviderConfig struct {
+	Type   string                 `yaml:"type"`
+	Config map[string]interface{} `yaml:"config"`
 }
 
-type NetworkingConfig struct {
-	Plugin string `yaml:"plugin"`
+type KubernetesConfig struct {
+	Distribution string                 `yaml:"distribution"`
+	Config       map[string]interface{} `yaml:"config"`
 }
 
-type ApplicationConfig struct {
-	Name    string                 `yaml:"name"`
-	Version string                 `yaml:"version,omitempty"`
-	Config  map[string]interface{} `yaml:"config,omitempty"`
+type RancherConfig struct {
+	Version           string `yaml:"version,omitempty"`
+	Deploy            bool   `yaml:"deploy,omitempty"`
+	Prime             bool   `yaml:"prime,omitempty"`
+	BootstrapPassword string `yaml:"bootstrap_password,omitempty"`
+}
+
+type SSHConfig struct {
+	KeyName        string `yaml:"key_name"`
+	PrivateKeyPath string `yaml:"private_key_path"`
+	User           string `yaml:"user"`
+}
+
+type ClusterSettings struct {
+	NodePrefix    string `yaml:"node_prefix"`
+	InstanceCount int    `yaml:"instance_count"`
 }
 
 // Validate checks if the given YAML content is valid according to the Saddle schema
@@ -49,46 +62,68 @@ func Validate(content string) error {
 		return fmt.Errorf("invalid YAML syntax: %w", err)
 	}
 
-	// Validate required fields
-	if config.Cluster.Name == "" {
-		return fmt.Errorf("cluster.name is required")
+	// Validate required top-level structure
+	if len(config.Clusters) == 0 {
+		return fmt.Errorf("'clusters' map must contain at least one cluster")
 	}
 
-	if len(config.Cluster.Nodes) == 0 {
-		return fmt.Errorf("cluster.nodes must contain at least one node")
-	}
-
-	// Validate each node
-	for i, node := range config.Cluster.Nodes {
-		if node.Role == "" {
-			return fmt.Errorf("cluster.nodes[%d].role is required", i)
+	// Validate each cluster
+	for clusterName, cluster := range config.Clusters {
+		// Validate provider
+		if cluster.Provider.Type == "" {
+			return fmt.Errorf("cluster '%s': provider.type is required", clusterName)
 		}
-		if node.Role != "control-plane" && node.Role != "worker" {
-			return fmt.Errorf("cluster.nodes[%d].role must be 'control-plane' or 'worker', got '%s'", i, node.Role)
+
+		validProviders := map[string]bool{
+			"aws":   true,
+			"azure": true,
+			"gcp":   true,
 		}
-		if node.InstanceType == "" {
-			return fmt.Errorf("cluster.nodes[%d].instance_type is required", i)
+		if !validProviders[cluster.Provider.Type] {
+			return fmt.Errorf("cluster '%s': provider.type must be one of: aws, azure, gcp (got '%s')", clusterName, cluster.Provider.Type)
 		}
-	}
 
-	// Validate networking
-	if config.Cluster.Networking.Plugin == "" {
-		return fmt.Errorf("cluster.networking.plugin is required")
-	}
+		if cluster.Provider.Config == nil || len(cluster.Provider.Config) == 0 {
+			return fmt.Errorf("cluster '%s': provider.config is required and must not be empty", clusterName)
+		}
 
-	validPlugins := map[string]bool{
-		"calico":  true,
-		"flannel": true,
-		"cilium":  true,
-	}
-	if !validPlugins[config.Cluster.Networking.Plugin] {
-		return fmt.Errorf("cluster.networking.plugin must be one of: calico, flannel, cilium (got '%s')", config.Cluster.Networking.Plugin)
-	}
+		// Validate kubernetes
+		if cluster.Kubernetes.Distribution == "" {
+			return fmt.Errorf("cluster '%s': kubernetes.distribution is required", clusterName)
+		}
 
-	// Validate applications (if present)
-	for i, app := range config.Cluster.Applications {
-		if app.Name == "" {
-			return fmt.Errorf("cluster.applications[%d].name is required", i)
+		validDistros := map[string]bool{
+			"rke2": true,
+			"k3s":  true,
+			"eks":  true,
+			"aks":  true,
+			"gke":  true,
+		}
+		if !validDistros[cluster.Kubernetes.Distribution] {
+			return fmt.Errorf("cluster '%s': kubernetes.distribution must be one of: rke2, k3s, eks, aks, gke (got '%s')", clusterName, cluster.Kubernetes.Distribution)
+		}
+
+		if cluster.Kubernetes.Config == nil || len(cluster.Kubernetes.Config) == 0 {
+			return fmt.Errorf("cluster '%s': kubernetes.config is required and must not be empty", clusterName)
+		}
+
+		// Validate SSH
+		if cluster.SSH.KeyName == "" {
+			return fmt.Errorf("cluster '%s': ssh.key_name is required", clusterName)
+		}
+		if cluster.SSH.PrivateKeyPath == "" {
+			return fmt.Errorf("cluster '%s': ssh.private_key_path is required", clusterName)
+		}
+		if cluster.SSH.User == "" {
+			return fmt.Errorf("cluster '%s': ssh.user is required", clusterName)
+		}
+
+		// Validate cluster settings
+		if cluster.Cluster.NodePrefix == "" {
+			return fmt.Errorf("cluster '%s': cluster.node_prefix is required", clusterName)
+		}
+		if cluster.Cluster.InstanceCount <= 0 {
+			return fmt.Errorf("cluster '%s': cluster.instance_count must be greater than 0", clusterName)
 		}
 	}
 

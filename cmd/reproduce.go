@@ -61,7 +61,7 @@ func runReproduce(cmd *cobra.Command, args []string) error {
 	if verbose {
 		fmt.Println("Step 1: Fetching Jira issue...")
 	}
-	jiraClient := jira.NewClient(cfg.Jira.URL, cfg.Jira.Username, cfg.Jira.Token)
+	jiraClient := jira.NewClient(cfg.Jira.URL, cfg.Jira.BearerToken)
 
 	issue, err := jiraClient.GetIssue(ctx, issueID)
 	if err != nil {
@@ -92,7 +92,7 @@ func runReproduce(cmd *cobra.Command, args []string) error {
 		fmt.Println("Generating YAML configuration...")
 	}
 
-	claudeClient := claude.NewClient(cfg.Claude.APIKey, cfg.Claude.Model)
+	claudeClient := claude.NewClient(cfg.Claude.Model)
 
 	promptInput := &claude.PromptInput{
 		IssueID:     issue.ID,
@@ -105,7 +105,7 @@ func runReproduce(cmd *cobra.Command, args []string) error {
 	}
 
 	startTime := time.Now()
-	yamlContent, err := claudeClient.GenerateYAML(ctx, promptInput)
+	yamlContent, err := claudeClient.GenerateYAML(ctx, promptInput, &cfg.AWS, &cfg.SSH)
 	if err != nil {
 		return fmt.Errorf("failed to generate YAML: %w", err)
 	}
