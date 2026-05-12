@@ -9,3 +9,12 @@ type Issue struct {
 	Labels      []string
 	Components  []string
 }
+
+// Attachment represents a Jira attachment
+type Attachment struct {
+	ID       string
+	Filename string
+	URL      string
+	MimeType string
+	Size     int64
+}

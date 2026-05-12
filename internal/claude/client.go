@@ -15,6 +15,7 @@ import (
 // Client defines the interface for Claude API operations
 type Client interface {
 	GenerateYAML(ctx context.Context, input *PromptInput, awsConfig *config.AWSConfig, sshConfig *config.SSHConfig) (string, error)
+	AnalyzeFiles(ctx context.Context, input *AnalysisInput, workDir string) (*AnalysisResult, error)
 }
 
 // GCloudClient implements the Claude Client interface using gcloud CLI

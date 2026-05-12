@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 )
 
@@ -187,4 +188,151 @@ func containsMiddle(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestListAttachments_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader != "Bearer test-bearer-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{
+			"fields": {
+				"attachment": [
+					{
+						"id": "316999",
+						"filename": "2026-03-24_15-52-37.yaml",
+						"content": "https://jira.suse.com/secure/attachment/316999/2026-03-24_15-52-37.yaml",
+						"mimeType": "text/yaml",
+						"size": 1024
+					},
+					{
+						"id": "316998",
+						"filename": "logs.tar.gz",
+						"content": "https://jira.suse.com/secure/attachment/316998/logs.tar.gz",
+						"mimeType": "application/gzip",
+						"size": 2048
+					}
+				]
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-bearer-token")
+	attachments, err := client.ListAttachments(context.Background(), "SURE-11483")
+
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if len(attachments) != 2 {
+		t.Fatalf("expected 2 attachments, got %d", len(attachments))
+	}
+
+	if attachments[0].Filename != "2026-03-24_15-52-37.yaml" {
+		t.Errorf("expected filename '2026-03-24_15-52-37.yaml', got '%s'", attachments[0].Filename)
+	}
+
+	if attachments[0].Size != 1024 {
+		t.Errorf("expected size 1024, got %d", attachments[0].Size)
+	}
+
+	if attachments[1].MimeType != "application/gzip" {
+		t.Errorf("expected mime type 'application/gzip', got '%s'", attachments[1].MimeType)
+	}
+}
+
+func TestListAttachments_NoAttachments(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{
+			"fields": {
+				"attachment": []
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-bearer-token")
+	attachments, err := client.ListAttachments(context.Background(), "SURE-11483")
+
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if len(attachments) != 0 {
+		t.Errorf("expected 0 attachments, got %d", len(attachments))
+	}
+}
+
+func TestListAttachments_Unauthorized(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "wrong-token")
+	_, err := client.ListAttachments(context.Background(), "SURE-11483")
+
+	if err == nil {
+		t.Fatal("expected error for unauthorized, got none")
+	}
+}
+
+func TestDownloadAttachment_Success(t *testing.T) {
+	testContent := "test file content"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader != "Bearer test-bearer-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(testContent))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-bearer-token")
+
+	tmpDir := t.TempDir()
+	destPath := tmpDir + "/test.txt"
+
+	err := client.DownloadAttachment(context.Background(), server.URL+"/test", destPath)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	// Verify file was created and has correct content
+	content, err := os.ReadFile(destPath)
+	if err != nil {
+		t.Fatalf("failed to read downloaded file: %v", err)
+	}
+
+	if string(content) != testContent {
+		t.Errorf("expected content '%s', got '%s'", testContent, string(content))
+	}
+}
+
+func TestDownloadAttachment_Unauthorized(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "wrong-token")
+
+	tmpDir := t.TempDir()
+	destPath := tmpDir + "/test.txt"
+
+	err := client.DownloadAttachment(context.Background(), server.URL+"/test", destPath)
+	if err == nil {
+		t.Fatal("expected error for unauthorized, got none")
+	}
 }
