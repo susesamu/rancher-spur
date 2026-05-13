@@ -14,6 +14,7 @@ import (
 
 var (
 	keepFiles bool
+	localMode bool
 )
 
 // sniffCmd represents the sniff command
@@ -27,9 +28,12 @@ Creates a directory named after the issue ID containing:
 - All downloaded and extracted files
 - FINDINGS.txt with compiled error logs sorted by timestamp
 
+Use --local flag to skip downloading and analyze files already in the directory.
+
 Example:
   spur sniff SURE-11483
   spur sniff SURE-11483 --keep-files
+  spur sniff SURE-11483 --local
   spur sniff SURE-11483 --verbose`,
 	Args: cobra.ExactArgs(1),
 	RunE: runSniff,
@@ -38,6 +42,7 @@ Example:
 func init() {
 	rootCmd.AddCommand(sniffCmd)
 	sniffCmd.Flags().BoolVar(&keepFiles, "keep-files", true, "keep downloaded files after analysis")
+	sniffCmd.Flags().BoolVar(&localMode, "local", false, "use local files instead of downloading from Jira")
 }
 
 func runSniff(cmd *cobra.Command, args []string) error {
@@ -48,17 +53,15 @@ func runSniff(cmd *cobra.Command, args []string) error {
 
 	if verbose {
 		fmt.Printf("Analyzing Jira issue: %s\n", issueID)
+		if localMode {
+			fmt.Printf("Mode: Local (using existing files)\n")
+		}
 		fmt.Printf("Working directory: %s\n\n", workDir)
-	}
-
-	// Create working directory
-	if err := os.MkdirAll(workDir, 0755); err != nil {
-		return fmt.Errorf("failed to create working directory: %w", err)
 	}
 
 	// Step 1: Fetch issue details
 	if verbose {
-		fmt.Println("Step 1: Fetching Jira issue details...")
+		fmt.Println("Step 1: Fetching Jira issue metadata...")
 	}
 	jiraClient := jira.NewClient(cfg.Jira.URL, cfg.Jira.BearerToken)
 
@@ -73,70 +76,110 @@ func runSniff(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Fetched issue: %s - %s\n", issue.ID, issue.Summary)
 	}
 
-	// Step 2: List attachments
-	if verbose {
-		fmt.Println("Step 2: Listing attachments...")
-	}
-
-	attachments, err := jiraClient.ListAttachments(ctx, issueID)
-	if err != nil {
-		return fmt.Errorf("failed to list attachments: %w", err)
-	}
-
-	if len(attachments) == 0 {
-		fmt.Println("No attachments found for this issue.")
-		return nil
-	}
-
-	if verbose {
-		fmt.Printf("  Found %d attachment(s)\n\n", len(attachments))
-	}
-
-	// Step 3: Download readable files
-	if verbose {
-		fmt.Println("Step 3: Downloading readable files...")
-	}
-
-	var downloadedFiles []string
 	var archiveFiles []string
 
-	for _, att := range attachments {
-		// Skip non-readable files
-		if !files.IsReadableFile(att.Filename) {
-			if verbose {
-				fmt.Printf("  Skipping (not readable): %s\n", att.Filename)
-			}
-			continue
+	if localMode {
+		// Local mode: use existing files from directory
+		if verbose {
+			fmt.Println("Step 2: Validating local directory...")
 		}
 
-		destPath := filepath.Join(workDir, att.Filename)
+		// Check directory exists
+		if _, err := os.Stat(workDir); os.IsNotExist(err) {
+			return fmt.Errorf("directory '%s' does not exist. Create it and add your files manually", workDir)
+		}
+
+		// Check directory has files
+		entries, err := os.ReadDir(workDir)
+		if err != nil {
+			return fmt.Errorf("failed to read directory: %w", err)
+		}
+
+		if len(entries) == 0 {
+			fmt.Printf("Warning: Directory '%s' is empty. Add files manually for analysis.\n\n", workDir)
+		} else {
+			if verbose {
+				fmt.Printf("  Found %d items in local directory\n\n", len(entries))
+			}
+
+			// Identify archives for extraction
+			for _, entry := range entries {
+				if !entry.IsDir() && files.IsArchive(entry.Name()) {
+					archiveFiles = append(archiveFiles, entry.Name())
+				}
+			}
+		}
+	} else {
+		// Original mode: download from Jira
+		// Create working directory
+		if err := os.MkdirAll(workDir, 0755); err != nil {
+			return fmt.Errorf("failed to create working directory: %w", err)
+		}
+
+		// Step 2: List attachments
+		if verbose {
+			fmt.Println("Step 2: Listing attachments...")
+		}
+
+		attachments, err := jiraClient.ListAttachments(ctx, issueID)
+		if err != nil {
+			return fmt.Errorf("failed to list attachments: %w", err)
+		}
+
+		if len(attachments) == 0 {
+			fmt.Println("No attachments found for this issue.")
+			return nil
+		}
 
 		if verbose {
-			fmt.Printf("  Downloading: %s (%d bytes)\n", att.Filename, att.Size)
+			fmt.Printf("  Found %d attachment(s)\n\n", len(attachments))
 		}
 
-		if err := jiraClient.DownloadAttachment(ctx, att.URL, destPath); err != nil {
-			fmt.Printf("  Warning: failed to download %s: %v\n", att.Filename, err)
-			continue
+		// Step 3: Download readable files
+		if verbose {
+			fmt.Println("Step 3: Downloading readable files...")
 		}
 
-		downloadedFiles = append(downloadedFiles, att.Filename)
+		var downloadedFiles []string
 
-		// Check if it's an archive
-		if files.IsArchive(att.Filename) {
-			archiveFiles = append(archiveFiles, att.Filename)
+		for _, att := range attachments {
+			// Skip non-readable files
+			if !files.IsReadableFile(att.Filename) {
+				if verbose {
+					fmt.Printf("  Skipping (not readable): %s\n", att.Filename)
+				}
+				continue
+			}
+
+			destPath := filepath.Join(workDir, att.Filename)
+
+			if verbose {
+				fmt.Printf("  Downloading: %s (%d bytes)\n", att.Filename, att.Size)
+			}
+
+			if err := jiraClient.DownloadAttachment(ctx, att.URL, destPath); err != nil {
+				fmt.Printf("  Warning: failed to download %s: %v\n", att.Filename, err)
+				continue
+			}
+
+			downloadedFiles = append(downloadedFiles, att.Filename)
+
+			// Check if it's an archive
+			if files.IsArchive(att.Filename) {
+				archiveFiles = append(archiveFiles, att.Filename)
+			}
 		}
-	}
 
-	if len(downloadedFiles) == 0 {
-		fmt.Println("No readable files to analyze.")
-		return nil
-	}
+		if len(downloadedFiles) == 0 {
+			fmt.Println("No readable files to analyze.")
+			return nil
+		}
 
-	if verbose {
-		fmt.Printf("  Downloaded %d file(s)\n\n", len(downloadedFiles))
-	} else {
-		fmt.Printf("Downloaded %d file(s)\n", len(downloadedFiles))
+		if verbose {
+			fmt.Printf("  Downloaded %d file(s)\n\n", len(downloadedFiles))
+		} else {
+			fmt.Printf("Downloaded %d file(s)\n", len(downloadedFiles))
+		}
 	}
 
 	// Step 4: Extract archives
@@ -238,7 +281,8 @@ func runSniff(cmd *cobra.Command, args []string) error {
 	fmt.Printf("\nFindings saved to: %s\n", findingsPath)
 
 	// Step 8: Cleanup (optional)
-	if !keepFiles {
+	// Only cleanup if files were downloaded (not in local mode)
+	if !localMode && !keepFiles {
 		if verbose {
 			fmt.Println("\nCleaning up downloaded files...")
 		}

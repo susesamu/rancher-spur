@@ -170,6 +170,149 @@ This shows detailed logs including:
 spur reproduce SURE-11610 --output staging-env.yaml --dry-run --verbose
 ```
 
+## Sniff Command
+
+The `sniff` command analyzes log files from Jira attachments to identify and extract error messages using Claude AI.
+
+### Basic Usage
+
+```bash
+spur sniff SURE-11483
+```
+
+This will:
+1. Fetch issue metadata (summary, description) from Jira
+2. Download all readable attachments (skips images, binaries)
+3. Extract archives (tar.gz, tgz, zip, tar)
+4. Use Claude AI to identify relevant files (Phase 1)
+5. Extract error logs from relevant files (Phase 2)
+6. Generate `FINDINGS.txt` with compiled errors
+
+### Local Mode
+
+If you already have log files locally, use `--local` to skip downloading:
+
+```bash
+# Create directory and add files manually
+mkdir SURE-11483
+cp /path/to/logs/* SURE-11483/
+
+# Analyze local files
+spur sniff SURE-11483 --local
+```
+
+**In local mode:**
+- Jira issue metadata (summary, description) is still fetched for analysis context
+- Directory `<ISSUE_ID>` must exist before running the command
+- Archives in the directory will still be extracted automatically
+- Files are not deleted (--keep-files has no effect)
+
+### File Retention
+
+By default, downloaded files are kept for further inspection:
+
+```bash
+spur sniff SURE-11483 --keep-files=true  # Default behavior
+```
+
+To clean up downloaded files after analysis:
+
+```bash
+spur sniff SURE-11483 --keep-files=false
+```
+
+**Note:** In local mode (`--local`), files are never deleted regardless of `--keep-files` setting.
+
+### Verbose Output
+
+```bash
+spur sniff SURE-11483 --verbose
+```
+
+Shows detailed progress including:
+- Files being downloaded
+- Archives being extracted
+- Claude analysis phases (file identification → error extraction)
+- Number of relevant files identified
+
+### Output Format
+
+The `FINDINGS.txt` file contains:
+
+```
+JIRA Issue: SURE-11483
+Summary: Rancher crashes during upgrade
+
+=== Relevant Files Analyzed ===
+- rancher.log
+- 2026-03-24_15-58-04.txt
+
+=== Error Logs ===
+
+[2026-03-24 15:52:37] [ERROR] [rancher.log]
+panic: runtime error: invalid memory address or nil pointer dereference
+[signal SIGSEGV: segmentation violation code=0x1 addr=0x0 pc=0x7f8b9c]
+
+[2026-03-24 15:58:04] [FATAL] [2026-03-24_15-58-04.txt]
+Failed to connect to database: connection timeout after 30s
+```
+
+### How Sniff Works
+
+**Two-Phase Analysis:**
+
+1. **Phase 1 - File Identification**: Claude analyzes file names (not contents) to identify relevant files based on:
+   - Filename patterns (log, error, debug, trace, crash)
+   - Jira issue context matching
+   - Recent timestamps
+
+2. **Phase 2 - Error Extraction**: Claude reads identified files and extracts:
+   - ERROR, FATAL, CRITICAL, PANIC messages
+   - Exceptions and stack traces
+   - Preserves timestamps and context
+
+**Token Optimization:**
+- Phase 1 only sends file names (~70-90% token savings)
+- Phase 2 only reads relevant files (not all files)
+- Large files (>10MB) are truncated with first/last portions preserved
+
+**Supported File Types:**
+- **Downloaded/Analyzed**: .txt, .log, .yaml, .yml, .json, and other text files
+- **Archives** (auto-extracted): .tar.gz, .tgz, .zip, .tar
+- **Skipped**: Images (.png, .jpg, .gif), binaries (.exe, .bin, .dll)
+
+### Sniff Examples
+
+**Basic analysis:**
+```bash
+spur sniff SURE-11483
+```
+
+**Local files with verbose output:**
+```bash
+mkdir SURE-11483
+cp /support-bundle/logs/* SURE-11483/
+spur sniff SURE-11483 --local --verbose
+```
+
+**Temporary analysis (clean up after):**
+```bash
+spur sniff SURE-11483 --keep-files=false
+```
+
+**Full workflow:**
+```bash
+# Download and keep files
+spur sniff SURE-11483 --verbose
+
+# Review FINDINGS.txt
+cat SURE-11483/FINDINGS.txt
+
+# Add more files manually and re-analyze
+cp additional-logs.txt SURE-11483/
+spur sniff SURE-11483 --local
+```
+
 ## YAML Schema
 
 Spur generates YAML configurations following the Saddle schema for AWS/RKE2/Rancher environments:
@@ -305,10 +448,15 @@ Removes the `spur` binary, generated YAML files, and coverage reports.
 spur/
 ├── cmd/                    # CLI commands
 │   ├── root.go            # Root command setup
-│   └── reproduce.go       # Reproduce command implementation
+│   ├── reproduce.go       # Reproduce command implementation
+│   └── sniff.go           # Sniff command for log analysis
 ├── internal/
 │   ├── jira/              # Jira API v2 client with Bearer token auth
 │   ├── claude/            # Claude API via gcloud CLI
+│   │   ├── client.go      # YAML generation with retry logic
+│   │   ├── prompt.go      # Prompt templates
+│   │   └── analyzer.go    # Two-phase log analysis
+│   ├── files/             # File and archive handling
 │   ├── saddle/            # Saddle CLI executor
 │   ├── config/            # Configuration management
 │   └── yaml/              # YAML validation for Saddle schema
@@ -317,9 +465,12 @@ spur/
 
 ### Key Packages
 
-- **cmd**: Cobra-based CLI command structure
-- **internal/jira**: Jira REST API v2 client with Bearer token authentication
-- **internal/claude**: Claude API integration via gcloud CLI with retry logic
+- **cmd**: Cobra-based CLI command structure with `reproduce` and `sniff` commands
+- **internal/jira**: Jira REST API v2 client with Bearer token authentication and attachment management
+- **internal/claude**: Claude API integration via gcloud CLI with:
+  - YAML generation with automatic retry logic
+  - Two-phase log analysis (file identification + error extraction)
+- **internal/files**: Archive extraction (tar.gz, zip) and file utilities with path traversal protection
 - **internal/saddle**: Saddle CLI execution wrapper
 - **internal/config**: Viper-based configuration (env vars + file)
 - **internal/yaml**: YAML validation against Saddle schema (AWS/RKE2/Rancher)
